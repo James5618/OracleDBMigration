@@ -1,0 +1,18 @@
+---
+# Oracle Destination Server Configuration (Oracle 19c)
+# This server is configured as the destination in the oracle_destination inventory group
+oracle_home: "/u01/app/oracle/product/19.0.0/dbhome_1"
+oracle_sid: "ORCL"
+# oracle_connect_string is automatically derived from inventory: {{ ansible_host }}:{{ oracle_port }}/{{ oracle_service_name }}
+# oracle_version is automatically detected at runtime via SQL*Plus
+
+# SYSDBA Credentials for Oracle Destination Server
+sysdba_user: "sys"
+sysdba_password: "your_sys_password_here"
+
+# Optional cleanup settings
+cleanup_destination_files: true
+
+# Connection settings
+oracle_port: 1521
+oracle_service_name: "ORCL"

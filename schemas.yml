@@ -1,0 +1,304 @@
+---
+# Schema Migration Configuration
+# Define multiple schemas to migrate in bulk
+#
+# WHAT GETS MIGRATED IN A COMPLETE SCHEMA:
+# =========================================
+# When exclude_objects: [] (empty), Oracle Data Pump migrates ALL objects owned by the schema:
+#
+# DATA OBJECTS:
+# - Tables (with all data, constraints, indexes)
+# - Partitioned tables (all partitions)
+# - Index-organized tables
+# - External tables (structure only)
+# - Materialized views (with data)
+# - Clusters
+#
+# CODE OBJECTS:
+# - Views (all types)
+# - Stored procedures
+# - Functions
+# - Packages (spec and body)
+# - Triggers (table, database, schema level)
+# - Types (object types, collections, VARRAYs)
+# - Java classes and sources
+#
+# SCHEMA OBJECTS:
+# - Sequences (with current values)
+# - Synonyms (private)
+# - Database links (private)
+# - Dimensions
+# - Mining models
+#
+# SECURITY & PERMISSIONS:
+# - User account (schema owner)
+# - Granted roles
+# - System privileges
+# - Object privileges granted TO the schema
+# - Object privileges granted BY the schema
+#
+# CONSTRAINTS & RELATIONSHIPS:
+# - Primary keys
+# - Foreign keys
+# - Unique constraints
+# - Check constraints
+# - NOT NULL constraints
+# - Referential integrity
+#
+# INDEXES & PERFORMANCE:
+# - B-tree indexes
+# - Bitmap indexes
+# - Function-based indexes
+# - Partial indexes
+# - Domain indexes
+# - Index statistics
+#
+# TABLESPACE MAPPING OPTIONS:
+# =========================
+# 
+# FOR IDENTICAL STORAGE (same tablespace names as source):
+# Option 1: Omit tablespace_mapping entirely (recommended)
+# Option 2: Set tablespace_mapping: {} (empty mapping)
+# Option 3: Set tablespace_mapping to null
+#
+# FOR TABLESPACE REDIRECTION (different tablespace names):
+# Use tablespace_mapping to redirect objects from source tablespaces to destination tablespaces
+# Example: DEV_DATA: "PROD_DATA" maps source DEV_DATA tablespace to destination PROD_DATA
+#
+# WHAT TABLESPACE_MAPPING CONTROLS:
+# - WHERE objects are stored on the destination (which tablespace)
+# - Does NOT control WHAT objects are migrated (use exclude_objects for that)
+# - Only affects tables, indexes, LOBs, and other storage objects
+# - Views, procedures, functions have no tablespace (not affected)
+#
+# EXAMPLES:
+# tablespace_mapping: {}              # Identical storage (empty mapping)
+# # tablespace_mapping omitted        # Identical storage (no mapping section)
+# tablespace_mapping:                 # Tablespace redirection
+#   SOURCE_DATA: "DEST_DATA"
+#   SOURCE_INDEX: "DEST_INDEX"
+#
+# EXCLUDE PATTERNS:
+# Use wildcards (*) for pattern matching:
+# - "TEMP_*" = excludes all objects starting with TEMP_
+# - "*_BACKUP" = excludes all objects ending with _BACKUP
+# - "*TEST*" = excludes all objects containing TEST
+
+schemas:
+  # Example 1: Complete schema migration with identical storage (no tablespace mapping)
+  - name: "HR"
+    description: "Human Resources schema - Complete migration, identical storage"
+    priority: 1
+    # No tablespace_mapping = preserve original tablespace layout exactly
+    exclude_objects: []  # Empty = migrate ALL objects in this schema
+    
+  # Example 2: Schema with selective exclusions (identical tablespaces)
+  - name: "FINANCE"
+    description: "Finance and Accounting schema - Exclude temporary/log objects"
+    priority: 2
+    # No tablespace_mapping = keep same tablespace names as source
+    exclude_objects:
+      - "TEMP_TABLE_*"     # Exclude all tables starting with TEMP_TABLE_
+      - "LOG_TABLE_*"      # Exclude all tables starting with LOG_TABLE_
+      - "AUDIT_TRAIL"      # Exclude specific table
+      - "SESSION_DATA"     # Exclude specific table
+      
+  # Example 3: Large schema with comprehensive exclusions (preserve tablespaces)
+  - name: "SALES"
+    description: "Sales and CRM schema - Exclude backup, temp, and test objects"
+    priority: 3
+    # Omit tablespace_mapping to preserve original tablespace layout
+    exclude_objects:
+      - "BAK_*"            # Exclude all backup tables
+      - "*_BACKUP"         # Exclude tables ending with _BACKUP
+      - "TEST_*"           # Exclude all test objects
+      - "*_TEST"           # Exclude objects ending with _TEST
+      - "TEMP_*"           # Exclude temporary objects
+      - "*_LOG"            # Exclude log tables
+      - "STAGING_*"        # Exclude staging tables
+      - "ETL_*"            # Exclude ETL process tables
+      
+  # Example 4: Schema with specific object type exclusions (identical storage)
+  - name: "INVENTORY"
+    description: "Inventory Management schema - Exclude archives and reports"
+    priority: 4
+    # No tablespace_mapping = use source tablespace names exactly
+    exclude_objects:
+      - "ARCHIVE_*"        # Exclude archive tables
+      - "*_ARCHIVE"        # Exclude tables ending with _ARCHIVE
+      - "REPORT_*"         # Exclude report tables
+      - "*_HIST"           # Exclude historical data tables
+      - "OLD_*"            # Exclude old/legacy tables
+      - "*_OLD"            # Exclude old versions
+      - "MIGRATION_*"      # Exclude migration helper tables
+      
+  # Example 5: Development schema with tablespace redirection (only example with mapping)
+  - name: "DEV_APP"
+    description: "Development Application schema - Map dev tablespaces to prod"
+    priority: 5
+    tablespace_mapping:
+      DEV_DATA: "PROD_DATA"    # Map dev tablespace to prod tablespace
+      DEV_INDEX: "PROD_INDEX"  # Map dev indexes to prod tablespace
+      USERS: "USERS"           # Keep USERS as-is
+      TEMP: "TEMP"             # Keep TEMP as-is
+    exclude_objects:
+      - "DEBUG_*"          # Exclude debug objects
+      - "*_DEBUG"          # Exclude debug tables
+      - "TEST_*"           # Exclude test objects
+      - "*_TEST"           # Exclude test tables
+      - "SAMPLE_*"         # Exclude sample data
+      - "*_SAMPLE"         # Exclude sample tables
+      - "DEMO_*"           # Exclude demo objects
+      - "MOCK_*"           # Exclude mock data
+      - "SCRATCH_*"        # Exclude scratch tables
+      - "TMP_*"            # Exclude temporary objects
+      - "*_TMP"            # Exclude temporary tables
+      - "WORK_*"           # Exclude work tables
+      - "*_WORK"           # Exclude work objects
+
+# Global migration settings
+migration_settings:
+  parallel_processes: 4
+  compression: "ALL"
+  version_compatibility: "18.0.0"
+  chunk_size: "1GB"
+  max_file_size: "2G"  # Maximum size per dump file (Oracle will split larger schemas)
+  
+# Validation settings
+validation:
+  check_constraints: true
+  check_indexes: true
+  check_triggers: true
+  verify_row_counts: true
+  
+# Backup settings
+backup:
+  create_pre_migration_backup: true
+  backup_retention_days: 7
+  
+# Error handling
+error_handling:
+  continue_on_schema_error: true
+  max_retry_attempts: 3
+  retry_delay_seconds: 30
+
+# ========================================================================
+# REAL-WORLD MIGRATION EXAMPLES
+# ========================================================================
+
+# EXAMPLE SCENARIO 1: Complete Production Migration
+# Use this when moving entire applications between servers
+# All schemas migrated with no exclusions
+#
+# schemas:
+#   - name: "PROD_HR"
+#     description: "Production HR System - Complete Migration"
+#     priority: 1
+#     tablespace_mapping:
+#       HR_DATA: "HR_DATA"
+#       HR_INDEX: "HR_INDEX"
+#     exclude_objects: []
+#
+#   - name: "PROD_FINANCE"
+#     description: "Production Finance System - Complete Migration"
+#     priority: 2
+#     tablespace_mapping:
+#       FINANCE_DATA: "FINANCE_DATA"
+#       FINANCE_INDEX: "FINANCE_INDEX"
+#     exclude_objects: []
+
+# EXAMPLE SCENARIO 2: Development to Production Migration
+# Use this when promoting from dev/test to production
+# Exclude development-specific objects
+#
+# schemas:
+#   - name: "DEV_APP"
+#     description: "Application Schema - Dev to Prod"
+#     priority: 1
+#     tablespace_mapping:
+#       DEV_DATA: "PROD_DATA"        # Map dev tablespace to prod
+#       DEV_INDEX: "PROD_INDEX"      # Map dev indexes to prod
+#     exclude_objects:
+#       - "TEST_*"                   # No test tables
+#       - "*_TEST"                   # No test objects
+#       - "DEBUG_*"                  # No debug objects
+#       - "SAMPLE_*"                 # No sample data
+#       - "TEMP_*"                   # No temporary objects
+
+# EXAMPLE SCENARIO 3: Selective Data Migration
+# Use this for migrating only specific parts of large schemas
+# Common for data warehouse or reporting migrations
+#
+# schemas:
+#   - name: "WAREHOUSE"
+#     description: "Data Warehouse - Exclude Archives and Staging"
+#     priority: 1
+#     tablespace_mapping:
+#       DW_DATA: "DW_DATA"
+#       DW_INDEX: "DW_INDEX"
+#     exclude_objects:
+#       - "STAGE_*"                  # No staging tables
+#       - "*_STAGING"                # No staging objects
+#       - "ARCHIVE_*"                # No archived data
+#       - "*_ARCHIVE"                # No archive tables
+#       - "ETL_*"                    # No ETL process tables
+#       - "*_LOG"                    # No ETL logs
+#       - "BACKUP_*"                 # No backup tables
+#       - "*_HIST"                   # No historical snapshots
+
+# EXAMPLE SCENARIO 4: Application Module Migration
+# Use this when migrating specific application modules
+# Each module gets its own schema with specific exclusions
+#
+# schemas:
+#   - name: "CRM_CORE"
+#     description: "CRM Core Module - Production Objects Only"
+#     priority: 1
+#     tablespace_mapping:
+#       CRM_DATA: "CRM_DATA"
+#     exclude_objects:
+#       - "*_CACHE"                  # No cache tables
+#       - "SESSION_*"                # No session data
+#       - "*_TEMP"                   # No temporary data
+#
+#   - name: "CRM_REPORTS"
+#     description: "CRM Reporting Module - Exclude Old Reports"
+#     priority: 2
+#     tablespace_mapping:
+#       CRM_REPORTS: "CRM_REPORTS"
+#     exclude_objects:
+#       - "OLD_*"                    # No old report versions
+#       - "*_OLD"                    # No deprecated reports
+#       - "DRAFT_*"                  # No draft reports
+
+# EXAMPLE SCENARIO 5: Cross-Version Migration (18c to 19c)
+# Use this for Oracle version upgrades
+# May need to exclude version-specific features
+#
+# schemas:
+#   - name: "APP_SCHEMA"
+#     description: "Application - 18c to 19c Migration"
+#     priority: 1
+#     tablespace_mapping:
+#       APP_DATA: "APP_DATA"
+#       APP_INDEX: "APP_INDEX"
+#     exclude_objects:
+#       - "*_18C_ONLY"               # Exclude 18c-specific objects
+#       - "LEGACY_*"                 # Exclude legacy features
+#       - "*_DEPRECATED"             # Exclude deprecated features
+
+# OBJECT TYPES THAT ARE ALWAYS MIGRATED (cannot be excluded):
+# - Schema/User definition
+# - Basic table structure
+# - Primary key constraints
+# - Basic indexes
+# - Essential system grants
+#
+# OBJECTS TYPICALLY EXCLUDED IN PRODUCTION MIGRATIONS:
+# - Test and development objects (*_TEST, TEST_*, *_DEV, DEV_*)
+# - Temporary and scratch objects (TEMP_*, *_TEMP, TMP_*, *_TMP)
+# - Backup and archive objects (BAK_*, *_BACKUP, ARCHIVE_*, *_ARCHIVE)
+# - Log and audit trail objects (*_LOG, LOG_*, AUDIT_*, *_AUDIT)
+# - Staging and ETL objects (STAGE_*, *_STAGING, ETL_*, *_ETL)
+# - Sample and demo data (SAMPLE_*, *_SAMPLE, DEMO_*, *_DEMO)
+# - Work and scratch tables (WORK_*, *_WORK, SCRATCH_*, *_SCRATCH)

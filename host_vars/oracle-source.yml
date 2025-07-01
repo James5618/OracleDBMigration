@@ -1,0 +1,18 @@
+---
+# Oracle Source Server Configuration (Oracle 18c)
+# This server is configured as the source in the oracle_source inventory group
+oracle_home: "/u01/app/oracle/product/18.0.0/dbhome_1"
+oracle_sid: "ORCL"
+# oracle_connect_string is automatically derived from inventory: {{ ansible_host }}:{{ oracle_port }}/{{ oracle_service_name }}
+# oracle_version is automatically detected at runtime via SQL*Plus
+
+# SYSDBA Credentials for Oracle Source Server
+sysdba_user: "sys"
+sysdba_password: "your_sys_password_here"
+
+# Optional cleanup settings
+cleanup_source_files: false
+
+# Connection settings
+oracle_port: 1521
+oracle_service_name: "ORCL"

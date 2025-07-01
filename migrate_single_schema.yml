@@ -1,0 +1,300 @@
+---
+# Single schema migration tasks
+# This file is included for each schema in the migration
+
+- name: "[{{ current_schema.name }}] Check if schema exists on source server"
+  shell: |
+    export ORACLE_HOME={{ hostvars[source_server].oracle_home }}
+    export ORACLE_SID={{ hostvars[source_server].oracle_sid }}
+    export PATH=$ORACLE_HOME/bin:$PATH
+    sqlplus -s {{ hostvars[source_server].sysdba_user }}/{{ hostvars[source_server].sysdba_password }}@{{ hostvars[source_server].ansible_host }}:{{ hostvars[source_server].oracle_port }}/{{ hostvars[source_server].oracle_service_name }} <<EOF
+    SET PAGESIZE 0
+    SET FEEDBACK OFF
+    SET HEADING OFF
+    SELECT COUNT(*) FROM dba_users WHERE username = UPPER('{{ current_schema.name }}');
+    EXIT;
+    EOF
+  register: schema_check
+  delegate_to: "{{ source_server }}"
+  
+- name: "[{{ current_schema.name }}] Skip if schema doesn't exist on source"
+  block:
+    - name: "[{{ current_schema.name }}] Log schema not found"
+      debug:
+        msg: "Schema {{ current_schema.name }} does not exist on source server {{ source_server }}. Skipping."
+    
+    - name: "[{{ current_schema.name }}] Update migration results - skipped"
+      set_fact:
+        migration_results: "{{ migration_results + [{'schema': current_schema.name, 'status': 'SKIPPED', 'reason': 'Schema not found on source'}] }}"
+  when: schema_check.stdout.strip() != "1"
+
+- name: "[{{ current_schema.name }}] Process schema migration"
+  block:
+    - name: "[{{ current_schema.name }}] Get schema size on source server"
+      shell: |
+        export ORACLE_HOME={{ hostvars[source_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[source_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        sqlplus -s {{ hostvars[source_server].sysdba_user }}/{{ hostvars[source_server].sysdba_password }}@{{ hostvars[source_server].ansible_host }}:{{ hostvars[source_server].oracle_port }}/{{ hostvars[source_server].oracle_service_name }} <<EOF
+        SET PAGESIZE 0
+        SET FEEDBACK OFF
+        SET HEADING OFF
+        SELECT ROUND(SUM(bytes)/1024/1024, 2) as size_mb
+        FROM dba_segments 
+        WHERE owner = UPPER('{{ current_schema.name }}');
+        EXIT;
+        EOF
+      register: schema_size
+      delegate_to: "{{ source_server }}"
+      
+    - name: "[{{ current_schema.name }}] Display schema size"
+      debug:
+        msg: "Schema {{ current_schema.name }} size: {{ schema_size.stdout.strip() }} MB"
+        
+    - name: "[{{ current_schema.name }}] Build exclude objects clause"
+      set_fact:
+        exclude_clause: "{% if current_schema.exclude_objects | length > 0 %}exclude=TABLE:\"{{ current_schema.exclude_objects | join('\",TABLE:\"') }}\"{% endif %}"
+        
+    - name: "[{{ current_schema.name }}] Export schema from source Oracle server"
+      shell: |
+        export ORACLE_HOME={{ hostvars[source_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[source_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        expdp {{ hostvars[source_server].sysdba_user }}/{{ hostvars[source_server].sysdba_password }}@{{ hostvars[source_server].ansible_host }}:{{ hostvars[source_server].oracle_port }}/{{ hostvars[source_server].oracle_service_name }} \
+          schemas={{ current_schema.name }} \
+          directory=DATA_PUMP_DIR \
+          dumpfile={{ current_schema.name }}_export_{{ migration_timestamp }}_%U.dmp \
+          logfile={{ log_file }} \
+          compression={{ migration_settings.compression | default('ALL') }} \
+          version={{ hostvars['localhost']['export_version'] | default('18.0.0') }} \
+          parallel={{ migration_settings.parallel_processes | default(4) }} \
+          filesize={{ migration_settings.max_file_size | default('2G') }} \
+          {% if exclude_clause %}{{ exclude_clause }}{% endif %}
+      register: export_result
+      delegate_to: "{{ source_server }}"
+      
+    - name: "[{{ current_schema.name }}] Check export status"
+      fail:
+        msg: "Export failed for {{ current_schema.name }}: {{ export_result.stderr }}"
+      when: export_result.rc != 0
+      
+    - name: "[{{ current_schema.name }}] Discover all generated dump files"
+      shell: |
+        export ORACLE_HOME={{ hostvars[source_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[source_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        sqlplus -s {{ hostvars[source_server].sysdba_user }}/{{ hostvars[source_server].sysdba_password }}@{{ hostvars[source_server].ansible_host }}:{{ hostvars[source_server].oracle_port }}/{{ hostvars[source_server].oracle_service_name }} <<EOF
+        SET PAGESIZE 0
+        SET FEEDBACK OFF
+        SET HEADING OFF
+        SELECT directory_path FROM dba_directories WHERE directory_name = 'DATA_PUMP_DIR';
+        EXIT;
+        EOF
+      register: dump_directory_result
+      delegate_to: "{{ source_server }}"
+      
+    - name: "[{{ current_schema.name }}] List all dump files for this schema"
+      find:
+        paths: "{{ dump_directory_result.stdout.strip() }}"
+        patterns: "{{ current_schema.name }}_export_{{ migration_timestamp }}_*.dmp"
+      register: dump_files_found
+      delegate_to: "{{ source_server }}"
+      
+    - name: "[{{ current_schema.name }}] Set dump file facts"
+      set_fact:
+        schema_dump_files: "{{ dump_files_found.files | map(attribute='path') | map('basename') | list }}"
+        dump_file_pattern: "{{ current_schema.name }}_export_{{ migration_timestamp }}_*.dmp"
+        dump_directory: "{{ dump_directory_result.stdout.strip() }}"
+      
+    - name: "[{{ current_schema.name }}] Get exported dump file location"
+      shell: |
+        export ORACLE_HOME={{ hostvars[source_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[source_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        sqlplus -s {{ hostvars[source_server].sysdba_user }}/{{ hostvars[source_server].sysdba_password }}@{{ hostvars[source_server].ansible_host }}:{{ hostvars[source_server].oracle_port }}/{{ hostvars[source_server].oracle_service_name }} <<EOF
+        SET PAGESIZE 0
+        SET FEEDBACK OFF
+        SET HEADING OFF
+        SELECT directory_path FROM dba_directories WHERE directory_name = 'DATA_PUMP_DIR';
+        EXIT;
+        EOF
+      register: dump_dir_path
+      delegate_to: "{{ source_server }}"
+      
+    # Ansible fetch/copy Transfer Method
+    - name: "[{{ current_schema.name }}] Copy dump files from source to local"
+      fetch:
+        src: "{{ item }}"
+        dest: "/tmp/{{ item | basename }}"
+        flat: yes
+      delegate_to: "{{ source_server }}"
+      loop: "{{ dump_files_found.files | map(attribute='path') | list }}"
+      when: transfer_method == "1"
+      
+    - name: "[{{ current_schema.name }}] Copy log file from source to local"
+      fetch:
+        src: "{{ dump_directory }}/{{ log_file }}"
+        dest: "/tmp/{{ log_file }}"
+        flat: yes
+      delegate_to: "{{ source_server }}"
+      when: transfer_method == "1"
+      
+    # SCP Transfer Method
+    - name: "[{{ current_schema.name }}] Transfer dump files via SCP"
+      shell: |
+        scp -o StrictHostKeyChecking=no \
+        {{ hostvars[source_server].ansible_user }}@{{ hostvars[source_server].ansible_host }}:{{ item }} \
+        {{ hostvars[destination_server].ansible_user }}@{{ hostvars[destination_server].ansible_host }}:{{ dest_dump_dir_path.stdout.strip() }}/{{ item | basename }}
+      delegate_to: "{{ source_server }}"
+      loop: "{{ dump_files_found.files | map(attribute='path') | list }}"
+      when: transfer_method == "2"
+      
+    - name: "[{{ current_schema.name }}] Transfer log file via SCP"
+      shell: |
+        scp -o StrictHostKeyChecking=no \
+        {{ hostvars[source_server].ansible_user }}@{{ hostvars[source_server].ansible_host }}:{{ dump_directory }}/{{ log_file }} \
+        {{ hostvars[destination_server].ansible_user }}@{{ hostvars[destination_server].ansible_host }}:{{ dest_dump_dir_path.stdout.strip() }}/{{ log_file }}
+      delegate_to: "{{ source_server }}"
+      when: transfer_method == "2"
+      
+    # Rsync Transfer Method
+    - name: "[{{ current_schema.name }}] Transfer dump files via Rsync"
+      shell: |
+        rsync -avz --progress \
+        {{ item }} \
+        {{ hostvars[destination_server].ansible_user }}@{{ hostvars[destination_server].ansible_host }}:{{ dest_dump_dir_path.stdout.strip() }}/
+      delegate_to: "{{ source_server }}"
+      loop: "{{ dump_files_found.files | map(attribute='path') | list }}"
+      when: transfer_method == "3"
+      
+    - name: "[{{ current_schema.name }}] Transfer log file via Rsync"
+      shell: |
+        rsync -avz --progress \
+        {{ dump_directory }}/{{ log_file }} \
+        {{ hostvars[destination_server].ansible_user }}@{{ hostvars[destination_server].ansible_host }}:{{ dest_dump_dir_path.stdout.strip() }}/
+      delegate_to: "{{ source_server }}"
+      when: transfer_method == "3"
+      
+    # Destination server tasks
+    - name: "[{{ current_schema.name }}] Check if schema already exists on destination server"
+      shell: |
+        export ORACLE_HOME={{ hostvars[destination_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[destination_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        sqlplus -s {{ hostvars[destination_server].sysdba_user }}/{{ hostvars[destination_server].sysdba_password }}@{{ hostvars[destination_server].ansible_host }}:{{ hostvars[destination_server].oracle_port }}/{{ hostvars[destination_server].oracle_service_name }} <<EOF
+        SET PAGESIZE 0
+        SET FEEDBACK OFF
+        SET HEADING OFF
+        SELECT COUNT(*) FROM dba_users WHERE username = UPPER('{{ current_schema.name }}');
+        EXIT;
+        EOF
+      register: dest_schema_check
+      delegate_to: "{{ destination_server }}"
+      
+    - name: "[{{ current_schema.name }}] Warn if schema exists on destination"
+      debug:
+        msg: "WARNING: Schema {{ current_schema.name }} already exists on destination server. It will be replaced."
+      when: dest_schema_check.stdout.strip() != "0"
+      
+    - name: "[{{ current_schema.name }}] Get destination dump directory path"
+      shell: |
+        export ORACLE_HOME={{ hostvars[destination_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[destination_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        sqlplus -s {{ hostvars[destination_server].sysdba_user }}/{{ hostvars[destination_server].sysdba_password }}@{{ hostvars[destination_server].ansible_host }}:{{ hostvars[destination_server].oracle_port }}/{{ hostvars[destination_server].oracle_service_name }} <<EOF
+        SET PAGESIZE 0
+        SET FEEDBACK OFF
+        SET HEADING OFF
+        SELECT directory_path FROM dba_directories WHERE directory_name = 'DATA_PUMP_DIR';
+        EXIT;
+        EOF
+      register: dest_dump_dir_path
+      delegate_to: "{{ destination_server }}"
+      
+    - name: "[{{ current_schema.name }}] Copy dump files to destination server"
+      copy:
+        src: "/tmp/{{ item | basename }}"
+        dest: "{{ dest_dump_dir_path.stdout.strip() }}/{{ item | basename }}"
+        mode: '0644'
+      delegate_to: "{{ destination_server }}"
+      loop: "{{ dump_files_found.files | map(attribute='path') | list }}"
+      when: transfer_method == "1"
+      
+    - name: "[{{ current_schema.name }}] Drop existing schema on destination if it exists"
+      shell: |
+        export ORACLE_HOME={{ hostvars[destination_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[destination_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        sqlplus -s {{ hostvars[destination_server].sysdba_user }}/{{ hostvars[destination_server].sysdba_password }}@{{ hostvars[destination_server].ansible_host }}:{{ hostvars[destination_server].oracle_port }}/{{ hostvars[destination_server].oracle_service_name }} <<EOF
+        WHENEVER SQLERROR CONTINUE;
+        DROP USER {{ current_schema.name }} CASCADE;
+        EXIT;
+        EOF
+      delegate_to: "{{ destination_server }}"
+      when: dest_schema_check.stdout.strip() != "0"
+      
+    - name: "[{{ current_schema.name }}] Import schema to destination Oracle server"
+      shell: |
+        export ORACLE_HOME={{ hostvars[destination_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[destination_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        impdp {{ hostvars[destination_server].sysdba_user }}/{{ hostvars[destination_server].sysdba_password }}@{{ hostvars[destination_server].ansible_host }}:{{ hostvars[destination_server].oracle_port }}/{{ hostvars[destination_server].oracle_service_name }} \
+          schemas={{ current_schema.name }} \
+          directory=DATA_PUMP_DIR \
+          dumpfile={{ dump_file_pattern }} \
+          logfile={{ current_schema.name }}_import_{{ migration_timestamp }}.log \
+          table_exists_action=REPLACE \
+          parallel={{ migration_settings.parallel_processes | default(4) }}
+      register: import_result
+      delegate_to: "{{ destination_server }}"
+      
+    - name: "[{{ current_schema.name }}] Check import status"
+      fail:
+        msg: "Import failed for {{ current_schema.name }}: {{ import_result.stderr }}"
+      when: import_result.rc != 0
+      
+    - name: "[{{ current_schema.name }}] Verify schema migration on destination"
+      shell: |
+        export ORACLE_HOME={{ hostvars[destination_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[destination_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        sqlplus -s {{ hostvars[destination_server].sysdba_user }}/{{ hostvars[destination_server].sysdba_password }}@{{ hostvars[destination_server].ansible_host }}:{{ hostvars[destination_server].oracle_port }}/{{ hostvars[destination_server].oracle_service_name }} <<EOF
+        SET PAGESIZE 0
+        SET FEEDBACK OFF
+        SET HEADING OFF
+        SELECT COUNT(*) FROM dba_objects WHERE owner = UPPER('{{ current_schema.name }}');
+        EXIT;
+        EOF
+      register: object_count
+      delegate_to: "{{ destination_server }}"
+      
+    - name: "[{{ current_schema.name }}] Update migration results - success"
+      set_fact:
+        migration_results: "{{ migration_results + [{'schema': current_schema.name, 'status': 'SUCCESS', 'objects': object_count.stdout.strip(), 'size_mb': schema_size.stdout.strip()}] }}"
+        successful_migrations: "{{ successful_migrations | int + 1 }}"
+        
+    - name: "[{{ current_schema.name }}] Clean up temporary files for this schema"
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/{{ dump_file }}"
+        - "/tmp/{{ log_file }}"
+      delegate_to: localhost
+      when: transfer_method == "1"
+      
+  rescue:
+    - name: "[{{ current_schema.name }}] Handle migration failure"
+      set_fact:
+        migration_results: "{{ migration_results + [{'schema': current_schema.name, 'status': 'FAILED', 'error': ansible_failed_result.msg | default('Unknown error')}] }}"
+        failed_migrations: "{{ failed_migrations | int + 1 }}"
+        
+    - name: "[{{ current_schema.name }}] Log migration failure"
+      debug:
+        msg: "Migration failed for schema {{ current_schema.name }}: {{ ansible_failed_result.msg | default('Unknown error') }}"
+        
+    - name: "[{{ current_schema.name }}] Continue with next schema"
+      meta: clear_host_errors
+      when: error_handling.continue_on_schema_error | default(true)
+      
+  when: schema_check.stdout.strip() == "1"

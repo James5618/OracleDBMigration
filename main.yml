@@ -1,0 +1,681 @@
+---
+- name: Oracle Schema Discovery - Display Available Schemas
+  hosts: localhost
+  gather_facts: no
+  
+  vars:
+    source_server: "{{ groups['oracle_source'][0] }}"
+    destination_server: "{{ groups['oracle_destination'][0] }}"
+    
+  tasks:
+    - name: Detect Oracle version on source server
+      shell: |
+        export ORACLE_HOME={{ hostvars[source_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[source_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        sqlplus -s {{ hostvars[source_server].sysdba_user }}/{{ hostvars[source_server].sysdba_password }}@{{ hostvars[source_server].ansible_host }}:{{ hostvars[source_server].oracle_port }}/{{ hostvars[source_server].oracle_service_name }} <<EOF
+        SET PAGESIZE 0
+        SET FEEDBACK OFF
+        SET HEADING OFF
+        SELECT banner FROM v\$version WHERE banner LIKE 'Oracle Database%';
+        SELECT version FROM v\$instance;
+        EXIT;
+        EOF
+      register: source_oracle_version_raw
+      delegate_to: "{{ source_server }}"
+      
+    - name: Parse source Oracle version information
+      set_fact:
+        source_oracle_version_full: "{{ source_oracle_version_raw.stdout_lines[0] | default('Unknown') }}"
+        source_oracle_version: "{{ source_oracle_version_raw.stdout_lines[0] | regex_search('Oracle Database ([0-9]+c?)', '\\1') | first | default('Unknown') }}"
+        source_oracle_major: "{{ source_oracle_version_raw.stdout_lines[0] | regex_search('Oracle Database ([0-9]+)', '\\1') | first | default('0') | int }}"
+        source_oracle_detailed_version: "{{ source_oracle_version_raw.stdout_lines[1] | default('Unknown') }}"
+      when: source_oracle_version_raw.stdout_lines | length > 0
+      
+    - name: Detect Oracle version on destination server
+      shell: |
+        export ORACLE_HOME={{ hostvars[destination_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[destination_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        sqlplus -s {{ hostvars[destination_server].sysdba_user }}/{{ hostvars[destination_server].sysdba_password }}@{{ hostvars[destination_server].ansible_host }}:{{ hostvars[destination_server].oracle_port }}/{{ hostvars[destination_server].oracle_service_name }} <<EOF
+        SET PAGESIZE 0
+        SET FEEDBACK OFF
+        SET HEADING OFF
+        SELECT banner FROM v\$version WHERE banner LIKE 'Oracle Database%';
+        SELECT version FROM v\$instance;
+        EXIT;
+        EOF
+      register: dest_oracle_version_raw
+      delegate_to: "{{ destination_server }}"
+      
+    - name: Parse destination Oracle version information
+      set_fact:
+        dest_oracle_version_full: "{{ dest_oracle_version_raw.stdout_lines[0] | default('Unknown') }}"
+        dest_oracle_version: "{{ dest_oracle_version_raw.stdout_lines[0] | regex_search('Oracle Database ([0-9]+c?)', '\\1') | first | default('Unknown') }}"
+        dest_oracle_major: "{{ dest_oracle_version_raw.stdout_lines[0] | regex_search('Oracle Database ([0-9]+)', '\\1') | first | default('0') | int }}"
+        dest_oracle_detailed_version: "{{ dest_oracle_version_raw.stdout_lines[1] | default('Unknown') }}"
+      when: dest_oracle_version_raw.stdout_lines | length > 0
+      
+    - name: Determine export version compatibility and migration details
+      set_fact:
+        # Use detailed version for export compatibility, falling back to major version logic
+        export_version: "{% if source_oracle_detailed_version != 'Unknown' %}{{ source_oracle_detailed_version }}{% elif source_oracle_major == 11 %}11.2.0{% elif source_oracle_major == 12 %}12.1.0{% elif source_oracle_major == 18 %}18.0.0{% elif source_oracle_major == 19 %}19.0.0{% elif source_oracle_major == 21 %}21.0.0{% elif source_oracle_major == 23 %}23.0.0{% else %}{{ source_oracle_major }}.0.0{% endif %}"
+        migration_type: "{% if dest_oracle_major > source_oracle_major %}upgrade{% elif dest_oracle_major == source_oracle_major %}same_version{% else %}downgrade{% endif %}"
+        # Store detected versions for use throughout the playbook
+        detected_source_version: "{{ source_oracle_detailed_version | default(source_oracle_version_full) }}"
+        detected_dest_version: "{{ dest_oracle_detailed_version | default(dest_oracle_version_full) }}"
+    - name: Get list of all schemas with sizes from source server
+      shell: |
+        export ORACLE_HOME={{ hostvars[source_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[source_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        sqlplus -s {{ hostvars[source_server].sysdba_user }}/{{ hostvars[source_server].sysdba_password }}@{{ hostvars[source_server].ansible_host }}:{{ hostvars[source_server].oracle_port }}/{{ hostvars[source_server].oracle_service_name }} <<EOF
+        SET PAGESIZE 0
+        SET FEEDBACK OFF
+        SET HEADING OFF
+        SET LINESIZE 200
+        SELECT 
+            u.username || '|' || 
+            NVL(ROUND(SUM(s.bytes)/1024/1024/1024, 2), 0) as schema_info
+        FROM dba_users u
+        LEFT JOIN dba_segments s ON u.username = s.owner
+        WHERE u.username NOT IN (
+            'SYS', 'SYSTEM', 'DBSNMP', 'SYSMAN', 'OUTLN', 'MGMT_VIEW',
+            'DIP', 'ORACLE_OCM', 'APPQOSSYS', 'WMSYS', 'EXFSYS', 'CTXSYS',
+            'XDB', 'ANONYMOUS', 'XS$NULL', 'OJVMSYS', 'DVF', 'DVSYS',
+            'DBSFWUSER', 'REMOTE_SCHEDULER_AGENT', 'SYSBACKUP', 'SYSDG',
+            'SYSKM', 'SYSRAC', 'SYS$UMF', 'GSMADMIN_INTERNAL', 'ORDDATA',
+            'ORDSYS', 'ORDPLUGINS', 'MDSYS', 'LBACSYS', 'FLOWS_FILES',
+            'APEX_030200', 'APEX_PUBLIC_USER', 'SPATIAL_CSW_ADMIN_USR',
+            'SPATIAL_WFS_ADMIN_USR', 'PUBLIC', 'GSMCATUSER', 'MDDATA',
+            'SYSAUX', 'GSMUSER', 'GGSYS', 'AUDSYS'
+        )
+        AND u.account_status = 'OPEN'
+        GROUP BY u.username
+        HAVING COUNT(s.bytes) > 0 OR u.username IN (
+            SELECT DISTINCT owner FROM dba_objects WHERE owner = u.username
+        )
+        ORDER BY SUM(s.bytes) DESC NULLS LAST;
+        EXIT;
+        EOF
+      register: schema_list_raw
+      delegate_to: "{{ source_server }}"
+      
+    - name: Parse schema information
+      set_fact:
+        available_schemas: "{{ schema_list_raw.stdout_lines | 
+          map('split', '|') | 
+          map('list') | 
+          selectattr('1', 'defined') |
+          map('list') |
+          list }}"
+      when: schema_list_raw.stdout_lines | length > 0
+      
+    - name: Display available schemas on source server
+      debug:
+        msg: |
+          ================== ORACLE SERVER INFORMATION ==================
+          Source Server: {{ source_server }}
+          Oracle Version: {{ source_oracle_version_full }} (detected)
+          Detailed Version: {{ detected_source_version }}
+          
+          Destination Server: {{ destination_server }}
+          Oracle Version: {{ dest_oracle_version_full }} (detected)
+          Detailed Version: {{ detected_dest_version }}
+          
+          Migration Type: {{ migration_type | title }}
+          Export Version: {{ export_version }} (auto-determined)
+          
+          ================== DISK SPACE ANALYSIS ==================
+          Source Server ({{ source_dump_dir }}):
+            Total: {{ source_space_info[0] }}  Used: {{ source_space_info[1] }}  Available: {{ source_space_info[2] }}  Usage: {{ source_space_info[3] }}
+          
+          Destination Server ({{ dest_dump_dir }}):
+            Total: {{ dest_space_info[0] }}  Used: {{ dest_space_info[1] }}  Available: {{ dest_space_info[2] }}  Usage: {{ dest_space_info[3] }}
+          
+          Estimated Requirements:
+            Total Schema Size: {{ total_schema_size_gb }} GB
+            Estimated Dump Size: {{ estimated_dump_size_gb }} GB (with compression)
+          
+          ================== AVAILABLE SCHEMAS ON SOURCE SERVER ==================
+          
+          {{ '%-30s %10s' | format('Schema Name', 'Size (GB)') }}
+          {{ '-' * 45 }}
+          {% for schema in available_schemas -%}
+          {{ '%-30s %10s' | format(schema[0], schema[1]) }}
+          {% endfor -%}
+          {{ '-' * 45 }}
+          Total schemas found: {{ available_schemas | length }}
+          Total size: {{ total_schema_size_gb }} GB
+          ========================================================================
+      when: available_schemas is defined and available_schemas | length > 0
+      
+    - name: Display message if no schemas found
+      debug:
+        msg: |
+          ================== ORACLE SERVER INFORMATION ==================
+          Source Server: {{ source_server }}
+          Oracle Version: {{ source_oracle_version_full | default('Connection Failed') }}
+          
+          Destination Server: {{ destination_server }}
+          Oracle Version: {{ dest_oracle_version_full | default('Connection Failed') }}
+          
+          ================== DISK SPACE STATUS ==================
+          Source Server ({{ source_dump_dir | default('Unknown') }}):
+            Available: {{ source_space_info[2] | default('Unknown') }}  Usage: {{ source_space_info[3] | default('Unknown') }}
+          
+          Destination Server ({{ dest_dump_dir | default('Unknown') }}):
+            Available: {{ dest_space_info[2] | default('Unknown') }}  Usage: {{ dest_space_info[3] | default('Unknown') }}
+          
+          ================== AVAILABLE SCHEMAS ON SOURCE SERVER ==================
+          
+          No user schemas found or connection failed.
+          Please verify database connectivity and permissions.
+          ========================================================================
+      when: available_schemas is not defined or available_schemas | length == 0
+      
+    - name: Validate migration compatibility
+      fail:
+        msg: |
+          MIGRATION NOT SUPPORTED:
+          Downgrade migrations from Oracle {{ source_oracle_version }} to Oracle {{ dest_oracle_version }} are not supported.
+          Please ensure the destination version is equal or higher than the source version.
+      when: 
+        - migration_type == "downgrade"
+        - source_oracle_major > 0
+        - dest_oracle_major > 0
+        
+    - name: Display migration warnings for same version
+      debug:
+        msg: |
+          WARNING: Same version migration detected.
+          Source: Oracle {{ source_oracle_version }}
+          Destination: Oracle {{ dest_oracle_version }}
+          This is typically used for server migration rather than version upgrade.
+      when: migration_type == "same_version"
+
+- name: Oracle Schema Migration ({{ source_oracle_version | default('Unknown') }} to {{ dest_oracle_version | default('Unknown') }})
+  hosts: localhost
+  gather_facts: no
+  vars_prompt:
+    - name: migration_mode
+      prompt: "Choose migration mode: (1) Single schema (2) Bulk migration from schemas.yml"
+      private: no
+      default: "1"
+    - name: schema_name
+      prompt: "Enter the schema name to migrate (only for single mode)"
+      private: no
+      when: migration_mode == "1"
+    - name: transfer_method
+      prompt: "Choose transfer method: (1) Ansible fetch/copy (2) SCP (3) Rsync"
+      private: no
+      default: "1"
+    - name: confirm_migration
+      prompt: "Confirm migration? (yes/no)"
+      private: no
+  
+  vars:
+    source_server: "{{ groups['oracle_source'][0] }}"
+    destination_server: "{{ groups['oracle_destination'][0] }}"
+    migration_timestamp: "{{ ansible_date_time.epoch }}"
+    export_dir: "/tmp/oracle_migration_{{ migration_timestamp }}"
+    
+  tasks:
+    - name: Load schema configuration for bulk migration
+      include_vars: schemas.yml
+      when: migration_mode == "2"
+      
+    - name: Create single schema variable for single mode
+      set_fact:
+        schemas:
+          - name: "{{ schema_name }}"
+            description: "Single schema migration"
+            priority: 1
+            tablespace_mapping:
+              USERS: "USERS"
+              TEMP: "TEMP"
+            exclude_objects: []
+      when: migration_mode == "1"
+      
+    - name: Validate confirmation
+      fail:
+        msg: "Migration cancelled by user"
+      when: confirm_migration != "yes"
+    
+    # Check and install Rsync if needed (for transfer method 3)
+    - name: Check if Rsync is installed on source server
+      shell: which rsync
+      register: rsync_check_source
+      delegate_to: "{{ source_server }}"
+      failed_when: false
+      when: transfer_method == "3"
+      
+    - name: Check if Rsync is installed on destination server
+      shell: which rsync
+      register: rsync_check_dest
+      delegate_to: "{{ destination_server }}"
+      failed_when: false
+      when: transfer_method == "3"
+      
+    - name: Detect package manager on source server
+      shell: |
+        if command -v dnf >/dev/null 2>&1; then
+          echo "dnf"
+        elif command -v yum >/dev/null 2>&1; then
+          echo "yum"
+        else
+          echo "none"
+        fi
+      register: pkg_manager_source
+      delegate_to: "{{ source_server }}"
+      when: 
+        - transfer_method == "3"
+        - rsync_check_source.rc != 0
+        
+    - name: Detect package manager on destination server
+      shell: |
+        if command -v dnf >/dev/null 2>&1; then
+          echo "dnf"
+        elif command -v yum >/dev/null 2>&1; then
+          echo "yum"
+        else
+          echo "none"
+        fi
+      register: pkg_manager_dest
+      delegate_to: "{{ destination_server }}"
+      when: 
+        - transfer_method == "3"
+        - rsync_check_dest.rc != 0
+        
+    - name: Install Rsync on source server using dnf
+      dnf:
+        name: rsync
+        state: present
+      delegate_to: "{{ source_server }}"
+      become: yes
+      when: 
+        - transfer_method == "3"
+        - rsync_check_source.rc != 0
+        - pkg_manager_source.stdout == "dnf"
+        
+    - name: Install Rsync on source server using yum
+      yum:
+        name: rsync
+        state: present
+      delegate_to: "{{ source_server }}"
+      become: yes
+      when: 
+        - transfer_method == "3"
+        - rsync_check_source.rc != 0
+        - pkg_manager_source.stdout == "yum"
+        
+    - name: Install Rsync on destination server using dnf
+      dnf:
+        name: rsync
+        state: present
+      delegate_to: "{{ destination_server }}"
+      become: yes
+      when: 
+        - transfer_method == "3"
+        - rsync_check_dest.rc != 0
+        - pkg_manager_dest.stdout == "dnf"
+      
+    - name: Install Rsync on destination server using yum
+      yum:
+        name: rsync
+        state: present
+      delegate_to: "{{ destination_server }}"
+      become: yes
+      when: 
+        - transfer_method == "3"
+        - rsync_check_dest.rc != 0
+        - pkg_manager_dest.stdout == "yum"
+        
+    - name: Fail if no supported package manager found on source server
+      fail:
+        msg: |
+          RSYNC INSTALLATION FAILED - NO SUPPORTED PACKAGE MANAGER:
+          No supported package manager (yum/dnf) found on source server {{ source_server }}.
+          Please install rsync manually or use a different transfer method.
+      when:
+        - transfer_method == "3"
+        - rsync_check_source.rc != 0
+        - pkg_manager_source.stdout == "none"
+        
+    - name: Fail if no supported package manager found on destination server
+      fail:
+        msg: |
+          RSYNC INSTALLATION FAILED - NO SUPPORTED PACKAGE MANAGER:
+          No supported package manager (yum/dnf) found on destination server {{ destination_server }}.
+          Please install rsync manually or use a different transfer method.
+      when:
+        - transfer_method == "3"
+        - rsync_check_dest.rc != 0
+        - pkg_manager_dest.stdout == "none"
+        
+    - name: Verify Rsync installation on source server
+      shell: rsync --version | head -1
+      register: rsync_version_source
+      delegate_to: "{{ source_server }}"
+      failed_when: false
+      when: transfer_method == "3"
+      
+    - name: Verify Rsync installation on destination server
+      shell: rsync --version | head -1
+      register: rsync_version_dest
+      delegate_to: "{{ destination_server }}"
+      failed_when: false
+      when: transfer_method == "3"
+      
+    - name: Fail if Rsync is still not available on source server
+      fail:
+        msg: |
+          RSYNC NOT AVAILABLE ON SOURCE SERVER:
+          Rsync installation or verification failed on {{ source_server }}.
+          Please install rsync manually or use a different transfer method.
+          Command attempted: rsync --version
+      when:
+        - transfer_method == "3"
+        - rsync_version_source.rc != 0
+        
+    - name: Fail if Rsync is still not available on destination server
+      fail:
+        msg: |
+          RSYNC NOT AVAILABLE ON DESTINATION SERVER:
+          Rsync installation or verification failed on {{ destination_server }}.
+          Please install rsync manually or use a different transfer method.
+          Command attempted: rsync --version
+      when:
+        - transfer_method == "3"
+        - rsync_version_dest.rc != 0
+        
+    - name: Test SSH connectivity for Rsync (source to destination)
+      shell: |
+        ssh -o BatchMode=yes -o ConnectTimeout=10 \
+        {{ hostvars[destination_server].ansible_user }}@{{ hostvars[destination_server].ansible_host }} \
+        "echo 'SSH connection test successful'"
+      register: ssh_test_rsync
+      delegate_to: "{{ source_server }}"
+      failed_when: false
+      when: transfer_method == "3"
+      
+    - name: Display Rsync readiness information
+      debug:
+        msg:
+          - "==================== RSYNC TRANSFER METHOD READY ===================="
+          - "Source server: {{ rsync_version_source.stdout | default('Not available') }}"
+          - "Destination server: {{ rsync_version_dest.stdout | default('Not available') }}"
+          - "SSH connectivity: {{ 'OK' if ssh_test_rsync.rc == 0 else 'FAILED - May require SSH key setup' }}"
+          - "Transfer ready: {{ 'YES' if (rsync_version_source.rc == 0 and rsync_version_dest.rc == 0) else 'NO' }}"
+          - "=================================================================="
+      when: transfer_method == "3"
+      
+    - name: Display SSH setup warning for Rsync
+      debug:
+        msg: |
+          WARNING: SSH connectivity test failed for Rsync transfer.
+          This may indicate that SSH keys are not properly configured.
+          
+          To set up SSH keys for passwordless Rsync:
+          1. Generate SSH key: ssh-keygen -t rsa -b 2048
+          2. Copy key to destination: ssh-copy-id {{ hostvars[destination_server].ansible_user }}@{{ hostvars[destination_server].ansible_host }}
+          3. Test connection: ssh {{ hostvars[destination_server].ansible_user }}@{{ hostvars[destination_server].ansible_host }}
+          
+          Migration will continue, but may prompt for passwords during Rsync transfers.
+      when:
+        - transfer_method == "3"
+        - ssh_test_rsync.rc != 0
+    
+    - name: Display migration information
+      debug:
+        msg:
+          - "Migration mode: {{ 'Single schema' if migration_mode == '1' else 'Bulk migration' }}"
+          - "Transfer method: {{ 'Ansible fetch/copy' if transfer_method == '1' else ('SCP' if transfer_method == '2' else 'Rsync') }}"
+          - "Schemas to migrate: {{ schemas | map(attribute='name') | join(', ') }}"
+          - "Source server: {{ source_server }} (Oracle {{ hostvars['localhost']['source_oracle_version'] | default('Unknown') }})"
+          - "Destination server: {{ destination_server }} (Oracle {{ hostvars['localhost']['dest_oracle_version'] | default('Unknown') }})"
+          - "Migration type: {{ hostvars['localhost']['migration_type'] | default('Unknown') | title }}"
+          - "Export version: {{ hostvars['localhost']['export_version'] | default('Unknown') }}"
+          - "Export directory: {{ export_dir }}"
+    
+    # Create export directory once
+    - name: Create export directory on source server
+      file:
+        path: "{{ export_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: "{{ source_server }}"
+      
+    # Initialize migration tracking
+    - name: Initialize migration results tracking
+      set_fact:
+        migration_results: []
+        total_schemas: "{{ schemas | length }}"
+        successful_migrations: 0
+        failed_migrations: 0
+    
+    # Process each schema
+    - name: Process schema migration
+      include_tasks: migrate_single_schema.yml
+      loop: "{{ schemas | sort(attribute='priority') }}"
+      loop_control:
+        loop_var: current_schema
+        label: "{{ current_schema.name }}"
+      vars:
+        schema_name: "{{ current_schema.name }}"
+        dump_file: "{{ current_schema.name }}_export_{{ migration_timestamp }}.dmp"
+        log_file: "{{ current_schema.name }}_export_{{ migration_timestamp }}.log"
+        transfer_method: "{{ transfer_method }}"
+        
+    # Final cleanup and reporting
+    - name: Create migration summary report
+      copy:
+        content: |
+          ==================== ORACLE SCHEMA MIGRATION SUMMARY ====================
+          Migration completed at: {{ ansible_date_time.iso8601 }}
+          Total schemas processed: {{ total_schemas }}
+          Successful migrations: {{ successful_migrations }}
+          Failed migrations: {{ failed_migrations }}
+          Source server: {{ source_server }} (Oracle {{ hostvars['localhost']['source_oracle_version'] | default('Unknown') }})
+          Destination server: {{ destination_server }} (Oracle {{ hostvars['localhost']['dest_oracle_version'] | default('Unknown') }})
+          Migration type: {{ hostvars['localhost']['migration_type'] | default('Unknown') | title }}
+          Export version used: {{ hostvars['localhost']['export_version'] | default('Unknown') }}
+          
+          DETAILED RESULTS:
+          {% for result in migration_results %}
+          Schema: {{ result.schema }}
+          Status: {{ result.status }}
+          {% if result.status == 'SUCCESS' %}
+          Objects migrated: {{ result.objects }}
+          Size (MB): {{ result.size_mb }}
+          {% elif result.status == 'FAILED' %}
+          Error: {{ result.error }}
+          {% elif result.status == 'SKIPPED' %}
+          Reason: {{ result.reason }}
+          {% endif %}
+          ---
+          {% endfor %}
+          
+        dest: "/tmp/migration_summary_{{ migration_timestamp }}.txt"
+      delegate_to: localhost
+          
+    - name: Display final migration results
+      debug:
+        msg:
+          - "==================== MIGRATION COMPLETED ===================="
+          - "Total schemas: {{ total_schemas }}"
+          - "Successful: {{ successful_migrations }}"
+          - "Failed: {{ failed_migrations }}"
+          - "Success rate: {{ ((successful_migrations | int / total_schemas | int) * 100) | round(1) }}%"
+          - "Source: {{ source_server }} (Oracle {{ hostvars['localhost']['source_oracle_version'] | default('Unknown') }})"
+          - "Destination: {{ destination_server }} (Oracle {{ hostvars['localhost']['dest_oracle_version'] | default('Unknown') }})"
+          - "Migration type: {{ hostvars['localhost']['migration_type'] | default('Unknown') | title }}"
+          - "Summary report: /tmp/migration_summary_{{ migration_timestamp }}.txt"
+          
+    # Clean up source dump files (optional)
+    - name: Clean up source dump files (optional)
+      shell: |
+        export ORACLE_HOME={{ hostvars[source_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[source_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        sqlplus -s {{ hostvars[source_server].sysdba_user }}/{{ hostvars[source_server].sysdba_password }}@{{ hostvars[source_server].ansible_host }}:{{ hostvars[source_server].oracle_port }}/{{ hostvars[source_server].oracle_service_name }} <<EOF
+        SET PAGESIZE 0
+        SET FEEDBACK OFF
+        SET HEADING OFF
+        SELECT directory_path FROM dba_directories WHERE directory_name = 'DATA_PUMP_DIR';
+        EXIT;
+        EOF
+      register: source_dump_path
+      delegate_to: "{{ source_server }}"
+      when: hostvars[source_server].cleanup_source_files | default(false)
+      
+    - name: Remove source dump files
+      shell: |
+        rm -f "{{ source_dump_path.stdout.strip() }}/{{ item.schema }}_export_{{ migration_timestamp }}_*.dmp"
+      loop: "{{ migration_results }}"
+      delegate_to: "{{ source_server }}"
+      when: 
+        - hostvars[source_server].cleanup_source_files | default(false)
+        - item.status == 'SUCCESS'
+        
+    - name: Remove source log files
+      file:
+        path: "{{ source_dump_path.stdout.strip() }}/{{ item.schema }}_export_{{ migration_timestamp }}.log"
+        state: absent
+      loop: "{{ migration_results }}"
+      delegate_to: "{{ source_server }}"
+      when: 
+        - hostvars[source_server].cleanup_source_files | default(false)
+        - item.status == 'SUCCESS'
+        
+    - name: Get Oracle Data Pump directory path on source server
+      shell: |
+        export ORACLE_HOME={{ hostvars[source_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[source_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        sqlplus -s {{ hostvars[source_server].sysdba_user }}/{{ hostvars[source_server].sysdba_password }}@{{ hostvars[source_server].ansible_host }}:{{ hostvars[source_server].oracle_port }}/{{ hostvars[source_server].oracle_service_name }} <<EOF
+        SET PAGESIZE 0
+        SET FEEDBACK OFF
+        SET HEADING OFF
+        SELECT directory_path FROM dba_directories WHERE directory_name = 'DATA_PUMP_DIR';
+        EXIT;
+        EOF
+      register: source_dump_dir_raw
+      delegate_to: "{{ source_server }}"
+      
+    - name: Get Oracle Data Pump directory path on destination server
+      shell: |
+        export ORACLE_HOME={{ hostvars[destination_server].oracle_home }}
+        export ORACLE_SID={{ hostvars[destination_server].oracle_sid }}
+        export PATH=$ORACLE_HOME/bin:$PATH
+        sqlplus -s {{ hostvars[destination_server].sysdba_user }}/{{ hostvars[destination_server].sysdba_password }}@{{ hostvars[destination_server].ansible_host }}:{{ hostvars[destination_server].oracle_port }}/{{ hostvars[destination_server].oracle_service_name }} <<EOF
+        SET PAGESIZE 0
+        SET FEEDBACK OFF
+        SET HEADING OFF
+        SELECT directory_path FROM dba_directories WHERE directory_name = 'DATA_PUMP_DIR';
+        EXIT;
+        EOF
+      register: dest_dump_dir_raw
+      delegate_to: "{{ destination_server }}"
+      
+    - name: Check disk space on source server (Data Pump directory)
+      shell: |
+        df -h "{{ source_dump_dir_raw.stdout.strip() }}" | tail -1 | awk '{print $2"|"$3"|"$4"|"$5}'
+      register: source_space_raw
+      delegate_to: "{{ source_server }}"
+      when: source_dump_dir_raw.stdout.strip() != ""
+      
+    - name: Check disk space on destination server (Data Pump directory)
+      shell: |
+        df -h "{{ dest_dump_dir_raw.stdout.strip() }}" | tail -1 | awk '{print $2"|"$3"|"$4"|"$5}'
+      register: dest_space_raw
+      delegate_to: "{{ destination_server }}"
+      when: dest_dump_dir_raw.stdout.strip() != ""
+      
+    - name: Parse disk space information
+      set_fact:
+        source_dump_dir: "{{ source_dump_dir_raw.stdout.strip() }}"
+        dest_dump_dir: "{{ dest_dump_dir_raw.stdout.strip() }}"
+        source_space_info: "{{ source_space_raw.stdout.split('|') if source_space_raw.stdout is defined else ['Unknown', 'Unknown', 'Unknown', 'Unknown'] }}"
+        dest_space_info: "{{ dest_space_raw.stdout.split('|') if dest_space_raw.stdout is defined else ['Unknown', 'Unknown', 'Unknown', 'Unknown'] }}"
+        
+    - name: Calculate total schema sizes for space estimation
+      set_fact:
+        total_schema_size_gb: "{{ available_schemas | map('last') | map('float') | sum | round(2) if available_schemas is defined else 0 }}"
+        # Estimate dump file size (typically 30-50% of schema size due to compression)
+        estimated_dump_size_gb: "{{ ((available_schemas | map('last') | map('float') | sum) * 0.4) | round(2) if available_schemas is defined else 0 }}"
+    - name: Validate available disk space on source server
+      fail:
+        msg: |
+          NOT ENOUGH DISK SPACE ON SOURCE SERVER:
+          The Data Pump directory on the source server ({{ source_dump_dir }}) has less than 10 GB of free space.
+          Please free up space or increase the disk size, then retry the migration.
+      when: 
+        - source_space_info[3] is defined
+        - source_space_info[3] | regex_replace('[^0-9]', '') | int < 10
+      
+    - name: Validate available disk space on destination server
+      fail:
+        msg: |
+          NOT ENOUGH DISK SPACE ON DESTINATION SERVER:
+          The Data Pump directory on the destination server ({{ dest_dump_dir }}) has less than 10 GB of free space.
+          Please free up space or increase the disk size, then retry the migration.
+      when: 
+        - dest_space_info[3] is defined
+        - dest_space_info[3] | regex_replace('[^0-9]', '') | int < 10
+    - name: Parse available space in GB for validation
+      set_fact:
+        source_available_gb: "{{ (source_space_info[2] | regex_replace('[^0-9.]', '') | float * (1024 if 'T' in source_space_info[2] else (1 if 'G' in source_space_info[2] else 0.001))) | round(2) }}"
+        dest_available_gb: "{{ (dest_space_info[2] | regex_replace('[^0-9.]', '') | float * (1024 if 'T' in dest_space_info[2] else (1 if 'G' in dest_space_info[2] else 0.001))) | round(2) }}"
+      when: 
+        - available_schemas is defined 
+        - available_schemas | length > 0
+        - source_space_info[2] != 'Unknown'
+        - dest_space_info[2] != 'Unknown'
+        
+    - name: Validate sufficient disk space on source server
+      fail:
+        msg: |
+          INSUFFICIENT DISK SPACE ON SOURCE SERVER:
+          Available space: {{ source_space_info[2] }} ({{ source_available_gb }} GB)
+          Required space: ~{{ estimated_dump_size_gb }} GB (estimated dump files)
+          Recommendation: Free up at least {{ (estimated_dump_size_gb - source_available_gb + 5) | round(2) }} GB additional space
+          Data Pump Directory: {{ source_dump_dir }}
+      when:
+        - available_schemas is defined
+        - available_schemas | length > 0
+        - source_available_gb is defined
+        - source_available_gb | float < estimated_dump_size_gb | float
+        
+    - name: Validate sufficient disk space on destination server
+      fail:
+        msg: |
+          INSUFFICIENT DISK SPACE ON DESTINATION SERVER:
+          Available space: {{ dest_space_info[2] }} ({{ dest_available_gb }} GB)
+          Required space: ~{{ estimated_dump_size_gb }} GB (estimated dump files)
+          Recommendation: Free up at least {{ (estimated_dump_size_gb - dest_available_gb + 5) | round(2) }} GB additional space
+          Data Pump Directory: {{ dest_dump_dir }}
+      when:
+        - available_schemas is defined
+        - available_schemas | length > 0
+        - dest_available_gb is defined
+        - dest_available_gb | float < estimated_dump_size_gb | float
+        
+    - name: Display disk space warnings if space is tight
+      debug:
+        msg: |
+          WARNING: DISK SPACE IS GETTING LOW
+          Source Server: {{ source_available_gb }} GB available, {{ estimated_dump_size_gb }} GB estimated needed
+          Destination Server: {{ dest_available_gb }} GB available, {{ estimated_dump_size_gb }} GB estimated needed
+          
+          Recommendations:
+          - Monitor disk space during migration
+          - Consider migrating schemas in smaller batches
+          - Enable cleanup_source_files for automatic cleanup after successful transfers
+      when:
+        - available_schemas is defined
+        - available_schemas | length > 0
+        - source_available_gb is defined
+        - dest_available_gb is defined
+        - (source_available_gb | float < (estimated_dump_size_gb | float * 1.5)) or (dest_available_gb | float < (estimated_dump_size_gb | float * 1.5))
+

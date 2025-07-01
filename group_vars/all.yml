@@ -1,0 +1,27 @@
+---
+# Example configuration file for additional settings
+# Copy and customize as needed
+
+# Global settings
+migration_timeout: 3600  # 1 hour timeout for migration operations
+log_retention_days: 30   # Keep logs for 30 days
+
+# Data Pump settings
+compression_level: "ALL"  # ALL, DATA_ONLY, METADATA_ONLY, NONE
+parallel_processes: 4     # Number of parallel processes for export/import
+
+# Network settings
+ssh_timeout: 30
+connection_timeout: 60
+
+# Backup settings (optional)
+create_backup_before_migration: true
+backup_retention_days: 7
+
+# Notification settings (optional)
+notify_on_completion: false
+notification_email: "admin@company.com"
+
+# Advanced Oracle settings
+export_version: "18.0.0"  # Force specific version compatibility
+tablespace_mapping: {}    # Custom tablespace mappings if needed
