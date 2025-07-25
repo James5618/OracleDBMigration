@@ -86,15 +86,15 @@
 
 schemas:
   # Example 1: Complete schema migration with identical storage (no tablespace mapping)
-  - name: "HR"
-    description: "Human Resources schema - Complete migration, identical storage"
+  - name: "EXAMPLE1"
+    description: "EXAMPLE1 Schema - Complete migration, identical storage"
     priority: 1
     # No tablespace_mapping = preserve original tablespace layout exactly
     exclude_objects: []  # Empty = migrate ALL objects in this schema
     
   # Example 2: Schema with selective exclusions (identical tablespaces)
-  - name: "FINANCE"
-    description: "Finance and Accounting schema - Exclude temporary/log objects"
+  - name: "EXAMPLE2 Schema"
+    description: "EXAMPLE2 Schema - Exclude temporary/log objects"
     priority: 2
     # No tablespace_mapping = keep same tablespace names as source
     exclude_objects:
@@ -104,8 +104,8 @@ schemas:
       - "SESSION_DATA"     # Exclude specific table
       
   # Example 3: Large schema with comprehensive exclusions (preserve tablespaces)
-  - name: "SALES"
-    description: "Sales and CRM schema - Exclude backup, temp, and test objects"
+  - name: "EXAMPLE3 Schema"
+    description: "EXAMPLE3 Schema - Exclude backup, temp, and test objects"
     priority: 3
     # Omit tablespace_mapping to preserve original tablespace layout
     exclude_objects:
@@ -119,8 +119,8 @@ schemas:
       - "ETL_*"            # Exclude ETL process tables
       
   # Example 4: Schema with specific object type exclusions (identical storage)
-  - name: "INVENTORY"
-    description: "Inventory Management schema - Exclude archives and reports"
+  - name: "EXAMPLE4 Schema"
+    description: "EXAMPLE4 Schema - Exclude archives and reports"
     priority: 4
     # No tablespace_mapping = use source tablespace names exactly
     exclude_objects:
@@ -133,8 +133,8 @@ schemas:
       - "MIGRATION_*"      # Exclude migration helper tables
       
   # Example 5: Development schema with tablespace redirection (only example with mapping)
-  - name: "DEV_APP"
-    description: "Development Application schema - Map dev tablespaces to prod"
+  - name: "EXAMPLE5 Schema"
+    description: "EXAMPLE5 Schema - Map dev tablespaces to prod"
     priority: 5
     tablespace_mapping:
       DEV_DATA: "PROD_DATA"    # Map dev tablespace to prod tablespace
@@ -182,110 +182,6 @@ error_handling:
   max_retry_attempts: 3
   retry_delay_seconds: 30
 
-# ========================================================================
-# REAL-WORLD MIGRATION EXAMPLES
-# ========================================================================
-
-# EXAMPLE SCENARIO 1: Complete Production Migration
-# Use this when moving entire applications between servers
-# All schemas migrated with no exclusions
-#
-# schemas:
-#   - name: "PROD_HR"
-#     description: "Production HR System - Complete Migration"
-#     priority: 1
-#     tablespace_mapping:
-#       HR_DATA: "HR_DATA"
-#       HR_INDEX: "HR_INDEX"
-#     exclude_objects: []
-#
-#   - name: "PROD_FINANCE"
-#     description: "Production Finance System - Complete Migration"
-#     priority: 2
-#     tablespace_mapping:
-#       FINANCE_DATA: "FINANCE_DATA"
-#       FINANCE_INDEX: "FINANCE_INDEX"
-#     exclude_objects: []
-
-# EXAMPLE SCENARIO 2: Development to Production Migration
-# Use this when promoting from dev/test to production
-# Exclude development-specific objects
-#
-# schemas:
-#   - name: "DEV_APP"
-#     description: "Application Schema - Dev to Prod"
-#     priority: 1
-#     tablespace_mapping:
-#       DEV_DATA: "PROD_DATA"        # Map dev tablespace to prod
-#       DEV_INDEX: "PROD_INDEX"      # Map dev indexes to prod
-#     exclude_objects:
-#       - "TEST_*"                   # No test tables
-#       - "*_TEST"                   # No test objects
-#       - "DEBUG_*"                  # No debug objects
-#       - "SAMPLE_*"                 # No sample data
-#       - "TEMP_*"                   # No temporary objects
-
-# EXAMPLE SCENARIO 3: Selective Data Migration
-# Use this for migrating only specific parts of large schemas
-# Common for data warehouse or reporting migrations
-#
-# schemas:
-#   - name: "WAREHOUSE"
-#     description: "Data Warehouse - Exclude Archives and Staging"
-#     priority: 1
-#     tablespace_mapping:
-#       DW_DATA: "DW_DATA"
-#       DW_INDEX: "DW_INDEX"
-#     exclude_objects:
-#       - "STAGE_*"                  # No staging tables
-#       - "*_STAGING"                # No staging objects
-#       - "ARCHIVE_*"                # No archived data
-#       - "*_ARCHIVE"                # No archive tables
-#       - "ETL_*"                    # No ETL process tables
-#       - "*_LOG"                    # No ETL logs
-#       - "BACKUP_*"                 # No backup tables
-#       - "*_HIST"                   # No historical snapshots
-
-# EXAMPLE SCENARIO 4: Application Module Migration
-# Use this when migrating specific application modules
-# Each module gets its own schema with specific exclusions
-#
-# schemas:
-#   - name: "CRM_CORE"
-#     description: "CRM Core Module - Production Objects Only"
-#     priority: 1
-#     tablespace_mapping:
-#       CRM_DATA: "CRM_DATA"
-#     exclude_objects:
-#       - "*_CACHE"                  # No cache tables
-#       - "SESSION_*"                # No session data
-#       - "*_TEMP"                   # No temporary data
-#
-#   - name: "CRM_REPORTS"
-#     description: "CRM Reporting Module - Exclude Old Reports"
-#     priority: 2
-#     tablespace_mapping:
-#       CRM_REPORTS: "CRM_REPORTS"
-#     exclude_objects:
-#       - "OLD_*"                    # No old report versions
-#       - "*_OLD"                    # No deprecated reports
-#       - "DRAFT_*"                  # No draft reports
-
-# EXAMPLE SCENARIO 5: Cross-Version Migration (18c to 19c)
-# Use this for Oracle version upgrades
-# May need to exclude version-specific features
-#
-# schemas:
-#   - name: "APP_SCHEMA"
-#     description: "Application - 18c to 19c Migration"
-#     priority: 1
-#     tablespace_mapping:
-#       APP_DATA: "APP_DATA"
-#       APP_INDEX: "APP_INDEX"
-#     exclude_objects:
-#       - "*_18C_ONLY"               # Exclude 18c-specific objects
-#       - "LEGACY_*"                 # Exclude legacy features
-#       - "*_DEPRECATED"             # Exclude deprecated features
 
 # OBJECT TYPES THAT ARE ALWAYS MIGRATED (cannot be excluded):
 # - Schema/User definition
