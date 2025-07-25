@@ -1,4 +1,4 @@
-# Oracle Schema Migration Playbook - Dynamic Ver## Features
+# Oracle Schema Migration Playbook - Dynamic Version Features
 
 ### 1. Single Schema Migration
 - Prompts for a single schema name during execution
