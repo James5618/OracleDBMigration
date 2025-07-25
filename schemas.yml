@@ -133,8 +133,8 @@ schemas:
       - "MIGRATION_*"      # Exclude migration helper tables
       
   # Example 5: Development schema with tablespace redirection (only example with mapping)
-  - name: "EXAMPLE5 Schema"
-    description: "EXAMPLE5 Schema - Map dev tablespaces to prod"
+  - name: "Dev Schema"
+    description: "Dev Schema - Map dev tablespaces to prod"
     priority: 5
     tablespace_mapping:
       DEV_DATA: "PROD_DATA"    # Map dev tablespace to prod tablespace
