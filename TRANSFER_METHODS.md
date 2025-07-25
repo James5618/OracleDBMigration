@@ -83,18 +83,6 @@ Source Server → Destination Server (direct, compressed)
 - Maximum performance required
 - Regular/repeated migrations
 
-## Performance Estimates
-
-For a 5 GB schema dump file:
-
-| Method | Estimated Time* | Notes |
-|--------|----------------|--------|
-| Ansible fetch/copy | 20-30 minutes | Depends on control machine network |
-| SCP | 10-15 minutes | Direct transfer, no compression |
-| Rsync | 8-12 minutes | Compressed transfer, optimized |
-
-*Times vary greatly based on network speed, server performance, and file compressibility.
-
 ## Network Requirements
 
 ### For Ansible fetch/copy:
