@@ -172,12 +172,6 @@ The playbook automatically constructs Oracle connect strings from the inventory 
 
 **Format**: `{{ ansible_host }}:{{ oracle_port }}/{{ oracle_service_name }}`
 
-**Benefits**:
-- **Single Source of Truth**: IP addresses are defined only in the inventory file
-- **Consistency**: Ensures connect strings always match the actual server addresses
-- **Maintainability**: Changes to server IPs only require inventory updates
-- **Error Reduction**: Eliminates mismatched connect strings and host addresses
-
 **Example**:
 - Inventory: `oracle18-server ansible_host=192.168.1.10`
 - Host vars: `oracle_port: 1521`, `oracle_service_name: "ORCL"`
@@ -193,11 +187,6 @@ The playbook automatically detects Oracle versions on both source and destinatio
 - Extracts major version (e.g., 18, 19, 21) and detailed version (e.g., 19.3.0.0.0)
 - Auto-determines compatible export version for Data Pump operations
 
-**Benefits**:
-- **Always Accurate**: Version information reflects the actual database, including patches
-- **Maintenance-Free**: No need to update host_vars when databases are patched or upgraded
-- **Automatic Compatibility**: Export version is determined based on actual source version
-- **Error Prevention**: Eliminates version mismatches and configuration drift
 
 **What You'll See**:
 ```
@@ -403,7 +392,7 @@ PLAY [Oracle Schema Discovery - Display Available Schemas] ********************
 
 TASK [Display available schemas on source server] ****************************
 ok: [localhost] => {
-    "msg": "================== AVAILABLE SCHEMAS ON SOURCE SERVER ==================\nServer: oracle18-server (Oracle 18)\n\nSchema Name                    Size (GB)\n---------------------------------------------\nHR                                    2.34\nFINANCE                              8.67\nSALES                                1.23\nINVENTORY                            5.45\n---------------------------------------------\nTotal schemas found: 4\n========================================================================"
+    "msg": "================== AVAILABLE SCHEMAS ON SOURCE SERVER ==================\nServer: oracle18-server (Oracle 18)\n\nSchema Name                    Size (GB)\n---------------------------------------------\nHR                                    2.34\nEXAMPLE1                              8.67\nEXAMPLE2                               1.23\nEXAMPLE3                          5.45\n---------------------------------------------\nTotal schemas found: 4\n========================================================================"
 }
 
 PLAY [Oracle Schema Migration from Oracle 18 to Oracle 19c] ******************
@@ -419,7 +408,7 @@ TASK [Display migration information] *******************************************
 ok: [localhost] => {
     "msg": [
         "Migration mode: Bulk migration",
-        "Schemas to migrate: HR, FINANCE, SALES, INVENTORY",
+        "Schemas to migrate: EXAMPLE1, EXAMPLE2, EXAMPLE3, EXAMPLE4",
         "Source server: oracle18-server", 
         "Destination server: oracle19-server"
     ]
