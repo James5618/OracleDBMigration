@@ -20,7 +20,7 @@
 
 ## Transfer Methods
 
-This Ansib## Prerequisites
+This Ansible Prerequisites
 
 1. **Oracle Database Access**: Ensure you have SYSDBA access to both source and destination Oracle servers
 2. **Data Pump Directory**: Ensure DATA_PUMP_DIR directory is configured on both servers
@@ -479,3 +479,4 @@ ok: [localhost] => {
    - Enable automatic cleanup: `cleanup_source_files: true`
    - Set cleanup retention: `cleanup_destination_files: true`
    - Manual cleanup: `rm -f /datapump/dir/*_export_*.dmp`
+
